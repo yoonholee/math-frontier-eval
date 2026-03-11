@@ -1,0 +1,39 @@
+corpus:
+  dataset: math-corpus-combined
+  n_examples: 100000
+  seed: 42
+
+eval:
+  n_samples: 2
+  temperature: 1.0
+  max_tokens: 16384
+  concurrency: 48
+  judge_model: local/openai/gpt-oss-20b
+  datasets:
+  - cmimc
+  - usamo
+  - imo_answerbench
+  - imo_proofbench
+
+models:
+- model: local/openai/gpt-oss-20b
+
+model_aliases:
+  gpt20b: local/openai/gpt-oss-20b
+  gpt120b: local/openai/gpt-oss-120b
+
+retrievers:
+  baselines:
+  - no_memory
+  - bm25_retrieval
+  - random_fewshot
+  frontier:
+  - evo_geo_solution_indexed
+  - evo_proof_split_or_max_diversity
+  - evo_geo_proof_curated_index
+  - evo_openmath_geo_proof_branch
+  - evo_domain_conditional_secondary
+  - evo_deepmath_hard_augment
+  - evo_proof_answer_split
+  - evo_combined_routing_diversity
+  - evo_algebra_hard_fusion
