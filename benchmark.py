@@ -1,18 +1,16 @@
-"""Per-problem retrieval benchmark for math competition problems.
+"""Frontier retriever benchmark — prompts loaded from pre-built HF dataset.
 
-Auto-discovers retrievers from retrievers/.
-Each retriever gets a static corpus + test_problems at init, then build_prompt() is called per problem.
+Prompts are pre-computed; no corpus or retriever code runs at eval time.
 
 Usage:
-    uv run benchmark.py run                                    # all datasets from config
-    uv run benchmark.py run --dataset imo_answerbench          # single dataset
+    uv run benchmark.py run                            # all retrievers + datasets from config
+    uv run benchmark.py run --retriever no_memory      # single retriever
+    uv run benchmark.py run --dataset imo_answerbench  # single dataset
 """
 
-import importlib
-import inspect
+import hashlib
 import json
 import os
-import re
 import sys
 import threading
 import time
@@ -20,11 +18,10 @@ from pathlib import Path
 
 import typer
 import yaml
-from data.eval_datasets import load_eval_problems, load_test_problems
+from data.eval_datasets import load_eval_problems
 from grading import grade_proofs
 from grading import verify as _verify_answer
 from llm_provider import LLM
-from math_retriever import MathRetriever
 from tqdm import tqdm
 
 os.environ.setdefault("LOCAL_BASE_URL", "http://iris-hgx-2:30000/v1")
@@ -32,6 +29,8 @@ app = typer.Typer(pretty_exceptions_enable=False)
 
 BASE = Path(__file__).parent
 RESULTS_DIR = BASE / "results"
+HF_PROMPTS_REPO = "yoonholee/math-frontier-prompts"
+LOCAL_PROMPTS_CACHE = BASE / "prompts_dataset.parquet"
 
 
 def load_config() -> dict:
@@ -82,33 +81,44 @@ def resolve_systems(
         names = [s.strip() for s in memory.split(",")]
     else:
         retrievers = config["retrievers"]
-        names = retrievers["baselines"] + retrievers.get("proposed", [])
+        names = retrievers["baselines"] + retrievers.get("frontier", retrievers.get("proposed", []))
     if debug:
         names = names[:10]
     return names
 
 
-def _get_retriever_class(name: str) -> type[MathRetriever] | None:
-    """Get the retriever class by short name, or None if not found."""
-    module_path = f"retrievers.{name}"
-    try:
-        module = importlib.import_module(module_path)
-    except ModuleNotFoundError:
-        return None
-    for _, obj in inspect.getmembers(module, inspect.isclass):
-        if issubclass(obj, MathRetriever) and obj is not MathRetriever:
-            return obj
-    return None
+_prompt_dataset_cache: dict | None = None
 
 
-def load_retriever(name: str, **kwargs) -> MathRetriever:
-    """Load a retriever by short name. Extra kwargs are filtered to accepted params."""
-    cls = _get_retriever_class(name)
-    if cls is None:
-        raise ValueError(f"Retriever '{name}' not found in retrievers/")
-    sig = inspect.signature(cls.__init__)
-    accepted = {k: v for k, v in kwargs.items() if k in sig.parameters}
-    return cls(**accepted)
+def load_prompt_dataset() -> dict:
+    """Load pre-built prompt dataset. Returns {(retriever, problem_id): prompt}.
+
+    Tries local cache first, then HuggingFace.
+    """
+    global _prompt_dataset_cache
+    if _prompt_dataset_cache is not None:
+        return _prompt_dataset_cache
+
+    import pandas as pd
+    if LOCAL_PROMPTS_CACHE.exists():
+        print(f"  Loading prompts from local cache: {LOCAL_PROMPTS_CACHE}")
+        df = pd.read_parquet(LOCAL_PROMPTS_CACHE)
+    else:
+        print(f"  Downloading prompts from {HF_PROMPTS_REPO}...")
+        from datasets import load_dataset
+        hf_ds = load_dataset(HF_PROMPTS_REPO, split="train")
+        df = hf_ds.to_pandas()
+
+    _prompt_dataset_cache = {
+        (row["retriever"], row["problem_id"]): row["prompt"]
+        for _, row in df.iterrows()
+    }
+    print(f"  Loaded {len(_prompt_dataset_cache)} (retriever, problem) prompts.")
+    return _prompt_dataset_cache
+
+
+def _problem_id(p: dict) -> str:
+    return p.get("problem_id") or hashlib.sha256(p["problem"].encode()).hexdigest()[:12]
 
 
 def _load_eval_problems(
@@ -128,35 +138,28 @@ def _load_eval_problems(
     return all_problems_by_ds, merged, len(merged)
 
 
-def build_prompts(
-    retriever: MathRetriever,
+def build_prompts_from_dataset(
+    retriever_name: str,
     problems: list[dict],
     n_samples: int,
+    prompt_ds: dict,
 ) -> tuple[list[str], list[str]]:
-    """Build prompts for all problems. Returns (problem_prompts, flat_prompts).
-
-    problem_prompts: one base prompt per problem
-    flat_prompts: n_samples copies per problem (with attempt suffix)
-    """
-    _fallback_preamble = "Solve the following math problem step by step. Put your answer inside \\boxed{}."
+    """Look up pre-built prompts for each problem. Returns (problem_prompts, flat_prompts)."""
     problem_prompts = []
     flat_prompts = []
-    for i, p in enumerate(problems):
-        try:
-            prompt = re.sub(
-                r"[\u200b-\u200f\u202a-\u202f\ufe00-\ufe0f\x00-\x1f]",
-                "",
-                retriever.build_prompt(p["problem"]),
-            )
-        except (AttributeError, KeyError, TypeError) as e:
-            print(
-                f"  [WARN] build_prompt failed for problem {i}: {e}",
-                file=sys.stderr,
-            )
-            prompt = f"{_fallback_preamble}\n\n{p['problem']}"
+    missing = 0
+    for p in problems:
+        pid = _problem_id(p)
+        prompt = prompt_ds.get((retriever_name, pid))
+        if prompt is None:
+            missing += 1
+            prompt = p["problem"]  # bare fallback
         problem_prompts.append(prompt)
         for j in range(n_samples):
             flat_prompts.append(prompt + f"\n\n(Attempt {j + 1})")
+    if missing:
+        print(f"  [WARN] {retriever_name}: {missing}/{len(problems)} prompts missing from dataset",
+              file=sys.stderr)
     return problem_prompts, flat_prompts
 
 
@@ -307,7 +310,7 @@ def score_responses(
 
 
 def eval_system(
-    retriever: MathRetriever,
+    retriever: str,
     problems: list[dict],
     llm: LLM,
     n_samples: int = 4,
@@ -355,8 +358,6 @@ def run(
         None,
         help="Eval dataset name (single dataset). Default: all datasets from config",
     ),
-    corpus_dataset: str = typer.Option(None, help="Override corpus dataset"),
-    corpus_n: int = typer.Option(None, help="Override corpus n_examples"),
     n_samples: int = typer.Option(None, help="Override n_samples from config"),
     concurrency: int = typer.Option(None, help="Override concurrency from config"),
     skip_existing: bool = typer.Option(True, help="Skip if result file exists"),
@@ -383,10 +384,7 @@ def run(
         models = models[:1]
 
     system_names = resolve_systems(memory, config, debug=debug)
-    test_problems = load_test_problems()
-
-    corpus_cfg = config["corpus"]
-    corpus_tag = corpus_dataset or corpus_cfg["dataset"]
+    prompt_ds = load_prompt_dataset()
 
     # Build dataset list
     dataset_names = [dataset] if dataset else eval_cfg.get("datasets", ["aime"])
@@ -421,22 +419,13 @@ def run(
         if not todo:
             continue
 
-        # Phase 1: Build prompts for all systems (CPU-only)
+        # Phase 1: Look up pre-built prompts for all systems (instant)
         sys_prompts = {}  # sys_name -> (problem_prompts, flat_prompts)
-        pbar = tqdm(
-            total=len(todo) * len(merged), desc="Building prompts", unit="prompt"
-        )
         for sys_name, _ in todo:
-            t_init = time.monotonic()
-            retriever = load_retriever(
-                sys_name,
-                test_problems=test_problems,
+            problem_prompts, flat_prompts = build_prompts_from_dataset(
+                sys_name, merged, n_samples, prompt_ds
             )
-            problem_prompts, flat_prompts = build_prompts(retriever, merged, n_samples)
             sys_prompts[sys_name] = (problem_prompts, flat_prompts)
-            pbar.update(len(merged))
-            pbar.set_postfix_str(f"{sys_name} ({time.monotonic() - t_init:.1f}s)")
-        pbar.close()
 
         # Phase 2: Generate all prompts in one parallel batch
         all_flat = []
@@ -486,7 +475,7 @@ def run(
 
             print(f"\n{'=' * 60}")
             print(
-                f"[EVAL] {sys_name} / {model_short} (Mean@{n_samples}) [{corpus_tag}]"
+                f"[EVAL] {sys_name} / {model_short} (Mean@{n_samples})"
             )
             print(
                 f"  {sys_in // 1000}k in | {sys_out // 1000}k out | {tok_rate:.0f} tok/s | {elapsed:.0f}s"
@@ -504,7 +493,7 @@ def run(
                         "total_output_tokens": sys_out,
                         "model": model_name,
                         "retriever": sys_name,
-                        "corpus": corpus_tag,
+                        "prompt_dataset": HF_PROMPTS_REPO,
                         "datasets": list(all_problems_by_ds.keys()),
                         "n_problems": len(merged),
                         "details": details,

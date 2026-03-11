@@ -1,4 +1,5 @@
 results/
+prompts_dataset.parquet
 __pycache__/
 *.pyc
 .venv/

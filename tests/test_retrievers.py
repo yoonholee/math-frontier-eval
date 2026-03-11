@@ -1,13 +1,12 @@
-"""Snapshot tests for frontier retriever prompt construction.
+"""Snapshot tests for the pre-built prompt dataset.
 
-These tests characterize the retrieval behavior of each frontier retriever
-on fixed input strings. They do NOT call an LLM — only verify that
-build_prompt() returns the expected structure (number of examples, prompt
-hash). If a retriever change breaks a snapshot, update the expected values
-intentionally after verifying the new behavior is correct.
+These tests verify that:
+1. The prompt dataset loads correctly and contains the expected prompts.
+2. Prompt hashes match values recorded when the dataset was built (2026-03-11).
+3. Dataset sizes and domain counts are correct.
 
-Corpus loads from HuggingFace (math-corpus-combined). Requires network
-access or a pre-populated HF_HOME cache.
+The prompt dataset is loaded from prompts_dataset.parquet (local cache)
+or from HuggingFace (yoonholee/math-frontier-prompts) if not cached.
 """
 
 import hashlib
@@ -18,16 +17,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from benchmark import load_retriever
-from data.eval_datasets import load_eval_problems, load_test_problems
+from benchmark import _problem_id, load_prompt_dataset
+from data.eval_datasets import load_eval_problems
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
-def test_problems():
-    return load_test_problems()
+def prompt_ds():
+    return load_prompt_dataset()
 
 
 @pytest.fixture(scope="session")
@@ -44,9 +43,9 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
-def _prompt(retriever_name, problem_dict, test_problems):
-    r = load_retriever(retriever_name, test_problems=test_problems)
-    return r.build_prompt(problem_dict["problem"])
+def _get_prompt(prompt_ds, retriever_name, problem_dict):
+    pid = _problem_id(problem_dict)
+    return prompt_ds.get((retriever_name, pid))
 
 
 # ---------------------------------------------------------------------------
@@ -82,10 +81,11 @@ SNAPSHOTS = {
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("retriever_name", list(SNAPSHOTS))
-def test_prompt_snapshot(retriever_name, sample_problems, test_problems):
-    """Each retriever must produce exact prompt lengths and hashes for fixed inputs."""
+def test_prompt_snapshot(retriever_name, sample_problems, prompt_ds):
+    """Prompts in dataset must match hashes recorded at build time (2026-03-11)."""
     for label, expected in SNAPSHOTS[retriever_name].items():
-        prompt = _prompt(retriever_name, sample_problems[label], test_problems)
+        prompt = _get_prompt(prompt_ds, retriever_name, sample_problems[label])
+        assert prompt is not None, f"No prompt found for {retriever_name}/{label}"
         n_ex = prompt.count("Example ")
         sha = _sha(prompt)
         assert n_ex == expected["n_examples"], (
@@ -97,20 +97,20 @@ def test_prompt_snapshot(retriever_name, sample_problems, test_problems):
         assert sha == expected["sha"], (
             f"{retriever_name}/{label}: prompt hash changed. "
             f"Expected {expected['sha']}, got {sha}. "
-            "Update snapshot if change is intentional."
+            "Rebuild the dataset if retriever logic changed intentionally."
         )
 
 
-def test_no_memory_has_no_examples(sample_problems, test_problems):
-    """no_memory retriever must never inject any examples."""
-    r = load_retriever("no_memory", test_problems=test_problems)
+def test_no_memory_has_no_examples(sample_problems, prompt_ds):
+    """no_memory prompts must never contain injected examples."""
     for label, p in sample_problems.items():
-        prompt = r.build_prompt(p["problem"])
+        prompt = _get_prompt(prompt_ds, "no_memory", p)
+        assert prompt is not None
         assert "Example " not in prompt, f"no_memory injected examples for {label}"
 
 
-def test_frontier_retrievers_inject_examples(sample_problems, test_problems):
-    """All frontier retrievers must inject at least one example for each problem."""
+def test_frontier_retrievers_inject_examples(sample_problems, prompt_ds):
+    """All frontier retrievers must have at least one example for each problem."""
     frontier = [
         "evo_geo_solution_indexed",
         "evo_proof_split_or_max_diversity",
@@ -123,11 +123,11 @@ def test_frontier_retrievers_inject_examples(sample_problems, test_problems):
         "evo_algebra_hard_fusion",
     ]
     for ret_name in frontier:
-        r = load_retriever(ret_name, test_problems=test_problems)
         for label, p in sample_problems.items():
-            prompt = r.build_prompt(p["problem"])
+            prompt = _get_prompt(prompt_ds, ret_name, p)
+            assert prompt is not None, f"No prompt for {ret_name}/{label}"
             assert "Example " in prompt, (
-                f"{ret_name} produced no examples for {label}"
+                f"{ret_name} has no examples for {label}"
             )
 
 
