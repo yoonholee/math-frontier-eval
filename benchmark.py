@@ -38,14 +38,6 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
-def resolve_model(model: str | None, config: dict) -> str:
-    """Resolve model alias or return as-is. None -> first model from config."""
-    if model is None:
-        return config["models"][0]["model"]
-    aliases = config.get("model_aliases", {})
-    return aliases.get(model, model)
-
-
 def resolve_eval_params(
     config: dict,
     *,
@@ -81,7 +73,9 @@ def resolve_systems(
         names = [s.strip() for s in memory.split(",")]
     else:
         retrievers = config["retrievers"]
-        names = retrievers["baselines"] + retrievers.get("frontier", retrievers.get("proposed", []))
+        names = retrievers["baselines"] + retrievers.get(
+            "frontier", retrievers.get("proposed", [])
+        )
     if debug:
         names = names[:10]
     return names
@@ -100,19 +94,20 @@ def load_prompt_dataset() -> dict:
         return _prompt_dataset_cache
 
     import pandas as pd
+
     if LOCAL_PROMPTS_CACHE.exists():
         print(f"  Loading prompts from local cache: {LOCAL_PROMPTS_CACHE}")
         df = pd.read_parquet(LOCAL_PROMPTS_CACHE)
     else:
         print(f"  Downloading prompts from {HF_PROMPTS_REPO}...")
         from datasets import load_dataset
+
         hf_ds = load_dataset(HF_PROMPTS_REPO, split="train")
         df = hf_ds.to_pandas()
 
-    _prompt_dataset_cache = {
-        (row["retriever"], row["problem_id"]): row["prompt"]
-        for _, row in df.iterrows()
-    }
+    _prompt_dataset_cache = dict(
+        zip(zip(df["retriever"], df["problem_id"]), df["prompt"])
+    )
     print(f"  Loaded {len(_prompt_dataset_cache)} (retriever, problem) prompts.")
     return _prompt_dataset_cache
 
@@ -158,8 +153,10 @@ def build_prompts_from_dataset(
         for j in range(n_samples):
             flat_prompts.append(prompt + f"\n\n(Attempt {j + 1})")
     if missing:
-        print(f"  [WARN] {retriever_name}: {missing}/{len(problems)} prompts missing from dataset",
-              file=sys.stderr)
+        print(
+            f"  [WARN] {retriever_name}: {missing}/{len(problems)} prompts missing from dataset",
+            file=sys.stderr,
+        )
     return problem_prompts, flat_prompts
 
 
@@ -289,17 +286,17 @@ def score_responses(
         else:
             passed = max(scores) > 0
         detail = {
-                "problem": p["problem"],
-                "groundtruth": p["groundtruth"],
-                "source": p.get("source", ""),
-                "prompt": problem_prompts[i],
-                "scores": scores,
-                "mean": sum(scores) / len(scores),
-                "passed": passed,
-                "responses": responses,
-                "input_tokens": in_tokens,
-                "output_tokens": out_tokens,
-            }
+            "problem": p["problem"],
+            "groundtruth": p["groundtruth"],
+            "source": p.get("source", ""),
+            "prompt": problem_prompts[i],
+            "scores": scores,
+            "mean": sum(scores) / len(scores),
+            "passed": passed,
+            "responses": responses,
+            "input_tokens": in_tokens,
+            "output_tokens": out_tokens,
+        }
         if "_ds_tag" in p:
             detail["_ds_tag"] = p["_ds_tag"]
         details.append(detail)
@@ -313,13 +310,16 @@ def eval_system(
     retriever: str,
     problems: list[dict],
     llm: LLM,
+    prompt_ds: dict,
     n_samples: int = 4,
     temperature: float = 0.7,
     max_tokens: int = 4096,
     judge_model: str = "local/openai/gpt-oss-20b",
 ) -> dict:
     """Evaluate a retriever on a list of problems. Returns {mean, pass, details}."""
-    problem_prompts, flat_prompts = build_prompts(retriever, problems, n_samples)
+    problem_prompts, flat_prompts = build_prompts_from_dataset(
+        retriever, problems, n_samples, prompt_ds
+    )
     results, elapsed, total_in, total_out, per_prompt_usage = generate_parallel(
         llm,
         flat_prompts,
@@ -368,8 +368,11 @@ def run(
     config = load_config()
     eval_cfg = config["eval"]
     n_samples, concurrency, max_tokens = resolve_eval_params(
-        config, n_samples=n_samples, concurrency=concurrency,
-        max_tokens=max_tokens, debug=debug,
+        config,
+        n_samples=n_samples,
+        concurrency=concurrency,
+        max_tokens=max_tokens,
+        debug=debug,
     )
     if debug:
         skip_existing = False
@@ -474,9 +477,7 @@ def run(
             tok_rate = sys_out / max(elapsed, 0.1)
 
             print(f"\n{'=' * 60}")
-            print(
-                f"[EVAL] {sys_name} / {model_short} (Mean@{n_samples})"
-            )
+            print(f"[EVAL] {sys_name} / {model_short} (Mean@{n_samples})")
             print(
                 f"  {sys_in // 1000}k in | {sys_out // 1000}k out | {tok_rate:.0f} tok/s | {elapsed:.0f}s"
             )
