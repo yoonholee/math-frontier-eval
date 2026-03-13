@@ -3,15 +3,13 @@ name = "math-frontier-eval"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=0.83.0",
+    "llm-provider @ git+https://github.com/yoonholee/llm-provider",
     "bm25s>=0.3.0",
     "datasets>=4.5.0",
     "latex2sympy2-extended>=1.11.0",
-    "openai>=2.21.0",
     "pytest>=8.0.0",
     "pyyaml>=6.0.0",
     "sympy>=1.14.0",
-    "tqdm>=4.67.0",
     "typer>=0.12.0",
 ]
 

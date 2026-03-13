@@ -8,7 +8,7 @@ eval:
   temperature: 1.0
   max_tokens: 16384
   concurrency: 48
-  judge_model: local/openai/gpt-oss-20b
+  judge_model: openrouter/openai/gpt-oss-20b
   datasets:
   - cmimc
   - usamo
@@ -16,11 +16,11 @@ eval:
   - imo_proofbench
 
 models:
-- model: local/openai/gpt-oss-20b
+- model: local/gpt-oss-20b
 
 model_aliases:
-  gpt20b: local/openai/gpt-oss-20b
-  gpt120b: local/openai/gpt-oss-120b
+  gpt20b: local/gpt-oss-20b
+  gpt120b: local/gpt-oss-120b
 
 retrievers:
   baselines:

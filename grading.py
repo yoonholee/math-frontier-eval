@@ -15,8 +15,6 @@ def _load_prompt(name: str) -> str:
     return (_PROMPTS_DIR / name).read_text()
 
 
-
-
 def _brace_extract(s: str, start: int) -> Optional[tuple[str, int]]:
     """From position start (at '{'), return (inner_content, end_pos) or None."""
     depth = 0
@@ -83,8 +81,6 @@ def get_answer_expr(s: str) -> str:
         if line.strip():
             return line.strip()
     return s
-
-
 
 
 def _remove_right_units(s: str) -> str:
@@ -172,8 +168,6 @@ def normalize(string: str) -> str:
     return _fix_a_slash_b(string)
 
 
-
-
 def _string_check(gold: str, pred: str) -> Optional[bool]:
     return normalize(gold) == normalize(pred)
 
@@ -228,7 +222,9 @@ def _numeric_check(gold: str, pred: str, tol: float = 1e-6) -> Optional[bool]:
 # LLM judge + proof grading
 
 
-def _llm_judge_answer(gold: str, pred: str, model: str = "openai/gpt-oss-20b") -> float:
+def _llm_judge_answer(
+    gold: str, pred: str, model: str = "openrouter/openai/gpt-oss-20b"
+) -> float:
     try:
         from llm_provider import LLM
 
@@ -317,14 +313,16 @@ def grade_proof(
     student_answer: str,
     solution: str,
     guidelines,
-    model: str = "openai/gpt-oss-20b",
+    model: str = "openrouter/openai/gpt-oss-20b",
     dataset: str = "imoproofbench",
 ) -> Optional[int]:
     """Grade a proof on 0-7 scale."""
     try:
         from llm_provider import LLM
 
-        prompt = build_proof_prompt(problem, student_answer, solution, guidelines, dataset)
+        prompt = build_proof_prompt(
+            problem, student_answer, solution, guidelines, dataset
+        )
         with LLM(model) as llm:
             resp = llm.chat([{"role": "user", "content": prompt}])
         return parse_proof_grade(resp)
@@ -334,7 +332,7 @@ def grade_proof(
 
 def grade_proofs(
     items: list[dict],
-    model: str = "openai/gpt-oss-20b",
+    model: str = "openrouter/openai/gpt-oss-20b",
     max_concurrent: int = 64,
     dataset: str = "imoproofbench",
 ) -> list[Optional[int]]:
@@ -358,11 +356,8 @@ def grade_proofs(
     with LLM(model=model, max_concurrent=max_concurrent) as llm:
         results = llm.generate(prompts, temperature=0, max_tokens=4096)
     return [
-        parse_proof_grade(r[0] if isinstance(r, list) and r else "")
-        for r in results
+        parse_proof_grade(r[0] if isinstance(r, list) and r else "") for r in results
     ]
-
-
 
 
 def load_imoproofbench(split: str = "train") -> list[dict]:
@@ -378,7 +373,6 @@ def load_proofbench(split: str = "24_25") -> list[dict]:
 
     ds = load_dataset("lm-provers/ProofBench", split=split)
     return [{**dict(row), "grading_guidelines": row["grading_scheme"]} for row in ds]
-
 
 
 # Top-level API
@@ -398,7 +392,7 @@ def verify(
     response: str,
     ground_truth: str,
     use_llm_judge: bool = False,
-    llm_model: str = "openai/gpt-oss-20b",
+    llm_model: str = "openrouter/openai/gpt-oss-20b",
 ) -> float:
     """Extract answer from response, check against ground_truth. Returns 1.0/0.0."""
     if response is None or ground_truth is None:

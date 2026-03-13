@@ -12,7 +12,6 @@ import hashlib
 import json
 import os
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -22,7 +21,6 @@ from data.eval_datasets import load_eval_problems
 from grading import grade_proofs
 from grading import verify as _verify_answer
 from llm_provider import LLM
-from tqdm import tqdm
 
 os.environ.setdefault("LOCAL_BASE_URL", "http://iris-hgx-2:30000/v1")
 app = typer.Typer(pretty_exceptions_enable=False)
@@ -172,33 +170,12 @@ def generate_parallel(
     temperature: float,
     max_tokens: int,
 ) -> tuple[list[list[str]], float, int, int, list[dict]]:
-    """Run prompts through the provided LLM and return result + simple token stats."""
+    """Run prompts through the provided LLM and return results + token stats."""
     t0 = time.monotonic()
     in_before = llm.total_input_tokens
     out_before = llm.total_output_tokens
-    llm._usage_log = {}
-
-    # Progress bar polling _usage_log completion count
-    bar = tqdm(total=len(prompts), desc="Generating", unit="prompt")
-    stop = threading.Event()
-
-    def _poll():
-        last = 0
-        while not stop.wait(0.5):
-            n = len(llm._usage_log)
-            if n > last:
-                bar.update(n - last)
-                last = n
-
-    t = threading.Thread(target=_poll, daemon=True)
-    t.start()
 
     raw_results = llm.generate(prompts, temperature=temperature, max_tokens=max_tokens)
-
-    stop.set()
-    t.join()
-    bar.update(len(prompts) - bar.n)
-    bar.close()
 
     def _normalize(resp):
         if isinstance(resp, str):
@@ -216,7 +193,7 @@ def generate_parallel(
     elapsed = time.monotonic() - t0
     total_in = llm.total_input_tokens - in_before
     total_out = llm.total_output_tokens - out_before
-    per_prompt_usage = [llm._usage_log.get(p, {}) for p in prompts]
+    per_prompt_usage = [{}] * len(prompts)  # llm-provider tracks cumulative totals only
     return results, elapsed, total_in, total_out, per_prompt_usage
 
 
@@ -320,7 +297,7 @@ def eval_system(
     n_samples: int = 4,
     temperature: float = 0.7,
     max_tokens: int = 4096,
-    judge_model: str = "local/openai/gpt-oss-20b",
+    judge_model: str = "local/gpt-oss-20b",
 ) -> dict:
     """Evaluate a retriever on a list of problems. Returns {mean, pass, details}."""
     problem_prompts, flat_prompts = build_prompts_from_dataset(
@@ -449,8 +426,8 @@ def run(
         n_sys = len(sys_ranges)
         print(f"\n  {len(all_flat)} prompts across {n_sys} systems")
 
+        judge = eval_cfg.get("judge_model", "local/gpt-oss-20b")
         with LLM(model=model_name, max_concurrent=concurrency) as llm:
-            judge = eval_cfg.get("judge_model", "local/openai/gpt-oss-20b")
             results, elapsed, total_in, total_out, per_prompt_usage = generate_parallel(
                 llm,
                 all_flat,
