@@ -87,7 +87,7 @@ _prompt_dataset_cache: dict | None = None
 def load_prompt_dataset() -> dict:
     """Load pre-built prompt dataset. Returns {(retriever, problem_id): prompt}.
 
-    Tries local cache first, then HuggingFace.
+    Tries local cache first (full parquet), then loads per-retriever subsets from HuggingFace.
     """
     global _prompt_dataset_cache
     if _prompt_dataset_cache is not None:
@@ -98,16 +98,22 @@ def load_prompt_dataset() -> dict:
     if LOCAL_PROMPTS_CACHE.exists():
         print(f"  Loading prompts from local cache: {LOCAL_PROMPTS_CACHE}")
         df = pd.read_parquet(LOCAL_PROMPTS_CACHE)
+        _prompt_dataset_cache = dict(
+            zip(zip(df["retriever"], df["problem_id"]), df["prompt"])
+        )
     else:
         print(f"  Downloading prompts from {HF_PROMPTS_REPO}...")
-        from datasets import load_dataset
+        from datasets import get_dataset_config_names, load_dataset
 
-        hf_ds = load_dataset(HF_PROMPTS_REPO, split="train")
-        df = hf_ds.to_pandas()
+        subsets = get_dataset_config_names(HF_PROMPTS_REPO)
+        _prompt_dataset_cache = {}
+        for subset in subsets:
+            hf_ds = load_dataset(HF_PROMPTS_REPO, subset, split="train")
+            df = hf_ds.to_pandas()
+            _prompt_dataset_cache.update(
+                zip(zip(df["retriever"], df["problem_id"]), df["prompt"])
+            )
 
-    _prompt_dataset_cache = dict(
-        zip(zip(df["retriever"], df["problem_id"]), df["prompt"])
-    )
     print(f"  Loaded {len(_prompt_dataset_cache)} (retriever, problem) prompts.")
     return _prompt_dataset_cache
 
