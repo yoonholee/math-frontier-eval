@@ -30,6 +30,15 @@ RESULTS_DIR = BASE / "results"
 HF_PROMPTS_REPO = "yoonholee/math-frontier-prompts"
 LOCAL_PROMPTS_CACHE = BASE / "prompts_dataset.parquet"
 
+# Official prompt templates (from QED-Nano eval)
+ANSWER_TEMPLATE = "{problem_statement}\n\nPlease reason step by step, and put your final answer within \\boxed{{}}."
+PROOF_TEMPLATE = (
+    "Generate a rigorous proof to the following question:\n\n{problem_statement}"
+)
+
+# Datasets that use proof grading (no groundtruth answer)
+PROOF_DATASETS = {"usamo", "imo_proofbench"}
+
 
 def load_config() -> dict:
     with open(BASE / "config.yaml") as f:
@@ -137,6 +146,15 @@ def _load_eval_problems(
     return all_problems_by_ds, merged, len(merged)
 
 
+def _make_prompt(context: str, problem: str, ds_tag: str) -> str:
+    """Compose final prompt: retriever context + official template."""
+    template = PROOF_TEMPLATE if ds_tag in PROOF_DATASETS else ANSWER_TEMPLATE
+    official = template.format(problem_statement=problem)
+    if context:
+        return context.rstrip() + "\n\n" + official
+    return official
+
+
 def build_prompts_from_dataset(
     retriever_name: str,
     problems: list[dict],
@@ -149,13 +167,18 @@ def build_prompts_from_dataset(
     missing = 0
     for p in problems:
         pid = _problem_id(p)
-        prompt = prompt_ds.get((retriever_name, pid))
-        if prompt is None:
-            missing += 1
-            prompt = p["problem"]  # bare fallback
+        retriever_prompt = prompt_ds.get((retriever_name, pid))
+        ds_tag = p.get("_ds_tag", "")
+        if retriever_name == "no_memory" or retriever_prompt is None:
+            if retriever_prompt is None:
+                missing += 1
+            context = ""
+        else:
+            context = retriever_prompt
+        prompt = _make_prompt(context, p["problem"], ds_tag)
         problem_prompts.append(prompt)
-        for j in range(n_samples):
-            flat_prompts.append(prompt + f"\n\n(Attempt {j + 1})")
+        for _ in range(n_samples):
+            flat_prompts.append(prompt)
     if missing:
         print(
             f"  [WARN] {retriever_name}: {missing}/{len(problems)} prompts missing from dataset",

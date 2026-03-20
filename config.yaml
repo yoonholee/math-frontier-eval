@@ -4,7 +4,7 @@ corpus:
   seed: 42
 
 eval:
-  n_samples: 2
+  n_samples: 3
   temperature: 1.0
   max_tokens: 16384
   concurrency: 48
